@@ -1,0 +1,24 @@
+# 图床运行时产物
+config.yaml
+data/
+uploads/
+imgbed
+imgbed.exe
+imgbed.exe~
+*.exe
+server.log
+server.err
+*.log
+
+# Go
+*.test
+*.out
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 无关的插件脚手架
+.mimocode/

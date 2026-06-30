@@ -1,0 +1,30 @@
+# 图床配置示例。复制为 config.yaml 后按需修改。
+# 首次运行若没有 config.yaml，会自动生成本文件副本并填入随机 Token。
+
+server:
+  port: 8080
+  base_url: "http://localhost:8080"   # 生成对外图片链接用（结尾不要带斜杠）
+
+auth:
+  token: ""                            # 留空 → 首次启动自动生成随机 Token
+
+storage:
+  backend: local                       # local | s3
+  local:
+    dir: ./uploads                     # 本地存储目录
+    url_path: /i                       # 取图路由前缀
+  s3:
+    endpoint: ""                       # 如 s3.amazonaws.com / oss-cn-hangzhou.aliyuncs.com
+    region: ""                         # 如 us-east-1
+    bucket: ""
+    access_key: ""
+    secret_key: ""
+    use_ssl: true
+    public_url: ""                     # 生成链接前缀（可为 CDN），留空则走服务端中转
+
+database:
+  path: ./data/imgbed.db               # SQLite 单文件
+
+limits:
+  max_size_mb: 20                      # 单文件大小上限
+  allowed_types: [image/jpeg, image/png, image/gif, image/webp, image/bmp]

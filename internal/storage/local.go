@@ -77,18 +77,3 @@ func (s *LocalStore) Delete(ctx context.Context, key string) error {
 	}
 	return nil
 }
-
-func (s *LocalStore) Exists(ctx context.Context, key string) (bool, error) {
-	p, err := s.path(key)
-	if err != nil {
-		return false, err
-	}
-	_, err = os.Stat(p)
-	if err == nil {
-		return true, nil
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return false, err
-}

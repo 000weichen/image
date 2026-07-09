@@ -111,6 +111,9 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("写入默认配置 %s: %w", path, werr)
 		}
 		fmt.Printf("已生成默认配置 %s，管理员 Token: %s\n", path, tok)
+		if err := ensureDirs(cfg); err != nil {
+			return nil, err
+		}
 		return cfg, nil
 	}
 
@@ -139,7 +142,18 @@ func Load(path string) (*Config, error) {
 	if err := ensureDirs(cfg); err != nil {
 		return nil, err
 	}
+	normalizeLimits(cfg)
 	return cfg, nil
+}
+
+// normalizeLimits 在加载时归一化上传限制，让后续读取无需兜底逻辑。
+func normalizeLimits(c *Config) {
+	if c.Limits.MaxSizeMB <= 0 {
+		c.Limits.MaxSizeMB = 20
+	}
+	if len(c.Limits.AllowedTypes) == 0 {
+		c.Limits.AllowedTypes = defaultConfig().Limits.AllowedTypes
+	}
 }
 
 func write(path string, cfg *Config) error {
@@ -150,11 +164,8 @@ func write(path string, cfg *Config) error {
 	return os.WriteFile(path, out, 0o600)
 }
 
-// MaxBytes 返回单文件大小上限（字节）。
+// MaxBytes 返回单文件大小上限（字节）。上限在 Load 时已归一化。
 func (c *Config) MaxBytes() int64 {
-	if c.Limits.MaxSizeMB <= 0 {
-		c.Limits.MaxSizeMB = 20
-	}
 	return int64(c.Limits.MaxSizeMB) * 1024 * 1024
 }
 

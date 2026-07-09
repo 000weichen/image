@@ -36,6 +36,8 @@ type StatsResponse struct {
 	TotalViews  int64        `json:"total_views"`
 	Unassigned  int64        `json:"unassigned"`
 	Albums      []AlbumCount `json:"albums"`
+	DailyStats  []DailyStat  `json:"daily_stats,omitempty"`
+	PopularImages []PopularImage `json:"popular_images,omitempty"`
 }
 
 type AlbumCount struct {
@@ -50,4 +52,20 @@ type ListResponse struct {
 	Total    int64   `json:"total"`
 	Page     int     `json:"page"`
 	PageSize int     `json:"page_size"`
+}
+
+// DailyStat 每日统计数据。
+type DailyStat struct {
+	Date  string `json:"date"`  // 格式：YYYY-MM-DD
+	Count int64  `json:"count"` // 当天上传数量
+	Size  int64  `json:"size"`  // 当天上传总大小
+}
+
+// PopularImage 热门图片。
+type PopularImage struct {
+	ID           int64  `json:"id"`
+	OriginalName string `json:"original_name"`
+	Filename     string `json:"filename"`
+	Views        int64  `json:"views"`
+	URL          string `json:"url"`
 }

@@ -3,7 +3,9 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -45,14 +47,20 @@ func Open(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("解析数据库路径: %w", err)
 	}
+	// SQLite 只创建文件不创建目录，这里兜底保证父目录存在。
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return nil, fmt.Errorf("创建数据库目录: %w", err)
+	}
 	// journal_mode=WAL 提升并发；foreign_keys=on 强制外键级联；busy_timeout 规避写锁争用。
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)", abs)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库: %w", err)
 	}
-	// SQLite 单写多读，连接池设小一些避免写锁抖动。
-	db.SetMaxOpenConns(1)
+	// SQLite 单写多读，适度提升连接数以支持并发读取。
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(time.Hour)
 
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()

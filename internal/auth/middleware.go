@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/subtle"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -11,7 +12,8 @@ import (
 //  2. X-API-Token: <token>
 func Middleware(token string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if extractToken(c) == token && token != "" {
+		got := extractToken(c)
+		if token != "" && subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
 			c.Next()
 			return
 		}

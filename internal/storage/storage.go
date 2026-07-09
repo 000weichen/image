@@ -17,8 +17,6 @@ type Store interface {
 	Open(ctx context.Context, key string) (io.ReadCloser, error)
 	// Delete 删除 key 对应对象，对象不存在视为成功。
 	Delete(ctx context.Context, key string) error
-	// Exists 判断 key 对应对象是否存在。
-	Exists(ctx context.Context, key string) (bool, error)
 }
 
 // New 根据配置返回对应后端。backend 为 "s3" 时走 S3，其余均走本地。

@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
-	"io"
-	"net/http"
+	"errors"
+	"io/fs"
+	"log"
 	"strconv"
 	"strings"
 
@@ -16,21 +18,33 @@ import (
 
 // Handler 聚合所有 HTTP 处理器和依赖。
 type Handler struct {
-	cfg      *config.Config
-	imageSvc *service.ImageService
-	albums   *service.AlbumService
-	store    storage.Store
-	db       *sql.DB
+	cfg       *config.Config
+	imageSvc  *service.ImageService
+	albumRepo *service.AlbumRepository
+	store     storage.Store
 }
 
-func New(cfg *config.Config, db *sql.DB, store storage.Store) *Handler {
+// New 创建 Handler。imageSvc 由调用方创建并负责关闭（其内部有后台计数协程）。
+func New(cfg *config.Config, db *sql.DB, store storage.Store, imageSvc *service.ImageService) *Handler {
 	return &Handler{
-		cfg:      cfg,
-		imageSvc: service.NewImageService(cfg, store),
-		albums:   service.NewAlbumService(),
-		store:    store,
-		db:       db,
+		cfg:       cfg,
+		imageSvc:  imageSvc,
+		albumRepo: service.NewAlbumRepository(db),
+		store:     store,
 	}
+}
+
+// Config 返回前端需要的服务端配置（上传限制、存储后端），避免前端硬编码漂移。
+func (h *Handler) Config(c *gin.Context) {
+	backend := strings.ToLower(strings.TrimSpace(h.cfg.Storage.Backend))
+	if backend == "" {
+		backend = "local"
+	}
+	c.JSON(200, gin.H{
+		"max_size_mb":     h.cfg.Limits.MaxSizeMB,
+		"allowed_types":   h.cfg.Limits.AllowedTypes,
+		"storage_backend": backend,
+	})
 }
 
 // ImageList 返回图片列表。album=0 表示未分类，album=N 表示指定相册。
@@ -67,7 +81,7 @@ func (h *Handler) ImageDetail(c *gin.Context) {
 		return
 	}
 	img, err := h.imageSvc.Get(c.Request.Context(), id)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		c.JSON(404, gin.H{"error": "图片不存在"})
 		return
 	}
@@ -86,7 +100,7 @@ func (h *Handler) ImageDelete(c *gin.Context) {
 		return
 	}
 	if err := h.imageSvc.Delete(c.Request.Context(), id); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(404, gin.H{"error": "图片不存在"})
 			return
 		}
@@ -112,7 +126,7 @@ func (h *Handler) ImageMove(c *gin.Context) {
 	}
 	var albumID *int64
 	if raw := strings.TrimSpace(body.Album); raw != "" && raw != "0" {
-		aid, aerr := h.albums.ResolveID(c.Request.Context(), raw)
+		aid, aerr := resolveAlbumID(c.Request.Context(), h.albumRepo, raw)
 		if aerr != nil {
 			c.JSON(400, gin.H{"error": "相册不存在"})
 			return
@@ -121,7 +135,7 @@ func (h *Handler) ImageMove(c *gin.Context) {
 	}
 	img, err := h.imageSvc.MoveToAlbum(c.Request.Context(), id, albumID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(404, gin.H{"error": "图片不存在"})
 			return
 		}
@@ -147,7 +161,7 @@ func (h *Handler) ImageAlias(c *gin.Context) {
 	}
 	img, err := h.imageSvc.SetAlias(c.Request.Context(), id, body.Alias)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(404, gin.H{"error": "图片不存在"})
 			return
 		}
@@ -158,6 +172,7 @@ func (h *Handler) ImageAlias(c *gin.Context) {
 }
 
 // ServeImage 通过 /i/*filepath 输出图片，并记录访问量。
+// 公开端点：错误详情只写日志，不回传给访客。
 func (h *Handler) ServeImage(c *gin.Context) {
 	filename, ok := imagePathParam(c)
 	if !ok {
@@ -165,12 +180,13 @@ func (h *Handler) ServeImage(c *gin.Context) {
 	}
 
 	img, err := h.imageSvc.RecordView(c.Request.Context(), filename)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		c.AbortWithStatus(404)
 		return
 	}
 	if err != nil {
-		c.JSON(500, gin.H{"error": "读取失败", "message": err.Error()})
+		log.Printf("查询图片 %s 失败: %v", filename, err)
+		c.JSON(500, gin.H{"error": "读取失败"})
 		return
 	}
 
@@ -185,12 +201,13 @@ func (h *Handler) ServeAlias(c *gin.Context) {
 		return
 	}
 	img, err := h.imageSvc.RecordAliasView(c.Request.Context(), alias)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		c.AbortWithStatus(404)
 		return
 	}
 	if err != nil {
-		c.JSON(500, gin.H{"error": "读取失败", "message": err.Error()})
+		log.Printf("查询别名 %s 失败: %v", alias, err)
+		c.JSON(500, gin.H{"error": "读取失败"})
 		return
 	}
 	h.writeStoredImage(c, img.Filename, img.MIME)
@@ -204,12 +221,13 @@ func (h *Handler) PreviewImage(c *gin.Context) {
 	}
 
 	img, err := h.imageSvc.GetByFilename(c.Request.Context(), filename)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		c.AbortWithStatus(404)
 		return
 	}
 	if err != nil {
-		c.JSON(500, gin.H{"error": "读取失败", "message": err.Error()})
+		log.Printf("查询图片 %s 失败: %v", filename, err)
+		c.JSON(500, gin.H{"error": "读取失败"})
 		return
 	}
 
@@ -218,7 +236,7 @@ func (h *Handler) PreviewImage(c *gin.Context) {
 
 // AlbumList 返回相册列表。
 func (h *Handler) AlbumList(c *gin.Context) {
-	albums, err := h.albums.List(c.Request.Context())
+	albums, err := h.albumRepo.List(c.Request.Context())
 	if err != nil {
 		c.JSON(500, gin.H{"error": "查询失败", "message": err.Error()})
 		return
@@ -241,7 +259,7 @@ func (h *Handler) AlbumCreate(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "相册名称不能为空"})
 		return
 	}
-	album, err := h.albums.Create(c.Request.Context(), body.Name, body.Description)
+	album, err := h.albumRepo.Create(c.Request.Context(), body.Name, body.Description)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "创建失败", "message": err.Error()})
 		return
@@ -256,8 +274,8 @@ func (h *Handler) AlbumDelete(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "无效的相册 ID"})
 		return
 	}
-	if err := h.albums.Delete(c.Request.Context(), id); err != nil {
-		if err == sql.ErrNoRows {
+	if err := h.albumRepo.Delete(c.Request.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(404, gin.H{"error": "相册不存在"})
 			return
 		}
@@ -287,9 +305,9 @@ func (h *Handler) AlbumUpdate(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "相册名称不能为空"})
 		return
 	}
-	album, err := h.albums.Update(c.Request.Context(), id, body.Name, body.Description)
+	album, err := h.albumRepo.Update(c.Request.Context(), id, body.Name, body.Description)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(404, gin.H{"error": "相册不存在"})
 			return
 		}
@@ -301,7 +319,7 @@ func (h *Handler) AlbumUpdate(c *gin.Context) {
 
 // Stats 返回全局统计。
 func (h *Handler) Stats(c *gin.Context) {
-	stats, err := service.Stats(c.Request.Context())
+	stats, err := h.imageSvc.Stats(c.Request.Context())
 	if err != nil {
 		c.JSON(500, gin.H{"error": "统计失败", "message": err.Error()})
 		return
@@ -311,6 +329,28 @@ func (h *Handler) Stats(c *gin.Context) {
 
 func parseID(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
+}
+
+func resolveAlbumID(ctx context.Context, repo *service.AlbumRepository, raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, sql.ErrNoRows
+	}
+	if id, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if _, err := repo.GetByID(ctx, id); err == nil {
+			return id, nil
+		}
+	}
+	albums, err := repo.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, a := range albums {
+		if a.Name == raw {
+			return a.ID, nil
+		}
+	}
+	return 0, sql.ErrNoRows
 }
 
 func imagePathParam(c *gin.Context) (string, bool) {
@@ -326,7 +366,14 @@ func imagePathParam(c *gin.Context) (string, bool) {
 func (h *Handler) writeStoredImage(c *gin.Context, filename, mime string) {
 	rc, err := h.store.Open(c.Request.Context(), filename)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "打开文件失败", "message": err.Error()})
+		// 数据库有记录但物理文件缺失：本地存储返回 404，其余记日志返回通用 500。
+		if errors.Is(err, fs.ErrNotExist) {
+			log.Printf("图片文件缺失: %s", filename)
+			c.AbortWithStatus(404)
+			return
+		}
+		log.Printf("打开图片 %s 失败: %v", filename, err)
+		c.JSON(500, gin.H{"error": "读取失败"})
 		return
 	}
 	defer rc.Close()
@@ -334,6 +381,3 @@ func (h *Handler) writeStoredImage(c *gin.Context, filename, mime string) {
 	c.Header("Cache-Control", "public, max-age=31536000")
 	c.DataFromReader(200, -1, mime, rc, nil)
 }
-
-var _ = io.Discard
-var _ = http.StatusOK

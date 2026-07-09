@@ -61,7 +61,10 @@ const state = {
   searchQuery: '',
   preserveManageFilter: false,
   detailImage: null,
+  // 上传限制与存储后端从 /api/config 拉取，以下是拉取失败时的兜底值。
   maxSize: 20,
+  allowedTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'],
+  backend: 'local',
   uploadResults: [],
 };
 
@@ -129,6 +132,19 @@ function showTokenModal() {
 function hideTokenModal() { $('token-modal').classList.remove('show'); }
 
 // ─── Data Loading ───
+async function loadConfig() {
+  try {
+    const c = await API.get('/config');
+    if (c.max_size_mb > 0) state.maxSize = c.max_size_mb;
+    if (Array.isArray(c.allowed_types) && c.allowed_types.length) state.allowedTypes = c.allowed_types;
+    if (c.storage_backend) state.backend = c.storage_backend;
+  } catch {}
+}
+
+function formatLabels() {
+  return state.allowedTypes.map(t => (t.split('/')[1] || t).toUpperCase());
+}
+
 async function loadStats() {
   try {
     state.stats = await API.get('/stats');
@@ -201,86 +217,186 @@ views.dashboard = async function () {
     recent = (data.images || []).slice(0, 6);
   } catch {}
 
-  const albumDist = (stats.albums || []).slice(0, 6);
-  const maxCount = albumDist.length ? Math.max(...albumDist.map(a => a.image_count)) : 1;
-  const palette = ['#4f7cff', '#6b5cff', '#34d399', '#fbbf24', '#a78bfa', '#f97316'];
+  // 热门图片数据
+  const popular = stats.popular_images || [];
+
+  // 每日统计数据（最近 7 天）
+  const dailyStats = stats.daily_stats || [];
 
   view.innerHTML = `
     <div class="stat-grid">
       <div class="stat-card">
-        <div class="stat-icon blue"><svg width="20" height="20"><use href="#ic-images"/></svg></div>
+        <div class="stat-header">
+          <div class="stat-icon accent"><svg width="20" height="20"><use href="#ic-images"/></svg></div>
+        </div>
         <div class="stat-value">${stats.total_images}</div>
-        <div class="stat-label">总图片</div>
+        <div class="stat-label">总图片数</div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon green"><svg width="20" height="20"><use href="#ic-database"/></svg></div>
+        <div class="stat-header">
+          <div class="stat-icon success"><svg width="20" height="20"><use href="#ic-database"/></svg></div>
+        </div>
         <div class="stat-value">${formatSize(stats.total_size)}</div>
         <div class="stat-label">占用空间</div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon amber"><svg width="20" height="20"><use href="#ic-trending"/></svg></div>
+        <div class="stat-header">
+          <div class="stat-icon warning"><svg width="20" height="20"><use href="#ic-trending"/></svg></div>
+        </div>
         <div class="stat-value">${stats.total_views}</div>
         <div class="stat-label">总访问量</div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon purple"><svg width="20" height="20"><use href="#ic-folder"/></svg></div>
+        <div class="stat-header">
+          <div class="stat-icon accent"><svg width="20" height="20"><use href="#ic-folder"/></svg></div>
+        </div>
         <div class="stat-value">${(stats.albums || []).length}</div>
-        <div class="stat-label">相册数</div>
+        <div class="stat-label">相册数量</div>
       </div>
     </div>
 
-    <div class="dashboard-row">
-      <div>
-        <div class="section-header">
-          <h2 class="section-title">最近上传</h2>
-          <a href="#upload" class="btn btn-ghost btn-sm">去上传</a>
+    ${dailyStats.length > 0 ? `
+    <div class="card" style="margin-bottom:24px">
+      <div class="card-header">
+        <h3 class="card-title">📈 上传趋势（最近 7 天）</h3>
+      </div>
+      <div class="chart-container">
+        <canvas id="daily-chart" style="max-height:200px"></canvas>
+      </div>
+    </div>` : ''}
+
+    <div class="dashboard-row" style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">最近上传</h3>
+          <a href="#upload" class="btn-outline btn-sm">去上传</a>
         </div>
         <div class="recent-grid" id="recent-grid">
           ${recent.length === 0
-            ? '<div class="empty-state" style="grid-column:1/-1;padding:30px"><p>还没有图片</p></div>'
+            ? '<div class="empty-state"><div class="empty-icon"><svg width="32" height="32"><use href="#ic-image"/></svg></div><div class="empty-title">还没有图片</div></div>'
             : recent.map(img => `
               <div class="recent-item" data-id="${img.id}">
-                <img src="${imgSrc(img.filename)}" loading="lazy" alt="" />
+                <img src="${imgSrc(img.filename)}" class="recent-thumb" loading="lazy" alt="" />
                 <div class="recent-info">
-                  <div class="recent-name">${esc(img.original_name)}</div>
-                  <div class="recent-meta">${formatSize(img.size)}</div>
+                  <div class="recent-name" title="${esc(img.original_name)}">${esc(img.original_name)}</div>
+                  <div class="recent-meta">${formatSize(img.size)} · ${img.views} 次浏览</div>
                 </div>
               </div>`).join('')}
         </div>
       </div>
 
-      <div>
-        <div class="section-header">
-          <h2 class="section-title">相册分布</h2>
-          <a href="#albums" class="btn btn-ghost btn-sm">管理</a>
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">🔥 热门图片</h3>
+          <a href="#manage" class="btn-outline btn-sm">查看全部</a>
         </div>
-        <div class="album-dist">
-          ${albumDist.length === 0
-            ? '<p style="color:var(--text-muted);font-size:13px;">暂无相册</p>'
-            : albumDist.map((a, i) => {
-              const pct = (a.image_count / maxCount) * 100;
-              return `<div class="dist-item">
-                <span class="dist-name" title="${esc(a.name)}">${esc(a.name)}</span>
-                <div class="dist-bar-bg"><div class="dist-bar" style="width:${pct}%;background:${palette[i % palette.length]};"></div></div>
-                <span class="dist-count">${a.image_count}</span>
-              </div>`;
-            }).join('')}
-          <div class="dist-item">
-            <span class="dist-name">未分类</span>
-            <div class="dist-bar-bg"><div class="dist-bar" style="width:${maxCount ? (stats.unassigned / maxCount) * 100 : 0}%;background:var(--text-muted);"></div></div>
-            <span class="dist-count">${stats.unassigned || 0}</span>
-          </div>
+        <div class="popular-list">
+          ${popular.length === 0
+            ? '<div class="empty-state"><p style="color:var(--text-muted);font-size:14px;">暂无访问记录</p></div>'
+            : popular.map((p, i) => `
+              <div class="popular-item" data-id="${p.id}">
+                <div class="popular-rank">${i + 1}</div>
+                <img src="${imgSrc(p.filename)}" class="popular-thumb" loading="lazy" alt="" />
+                <div class="popular-info">
+                  <div class="popular-name" title="${esc(p.original_name)}">${esc(p.original_name)}</div>
+                  <div class="popular-views">${p.views} 次浏览</div>
+                </div>
+              </div>`).join('')}
         </div>
       </div>
     </div>`;
 
+  // 绑定最近上传点击事件
   view.querySelectorAll('.recent-item').forEach(el => {
     el.addEventListener('click', () => {
       const img = recent.find(i => String(i.id) === el.dataset.id);
       if (img) openDetail(img);
     });
   });
+
+  // 绑定热门图片点击事件
+  view.querySelectorAll('.popular-item').forEach(el => {
+    el.addEventListener('click', async () => {
+      const id = parseInt(el.dataset.id);
+      try {
+        const img = await API.get(`/images/${id}`);
+        openDetail(img);
+      } catch (e) {
+        toast('加载图片失败', 'error');
+      }
+    });
+  });
+
+  // 绘制趋势图
+  if (dailyStats.length > 0) {
+    renderDailyChart(dailyStats);
+  }
 };
+
+// 绘制每日上传趋势图
+function renderDailyChart(dailyStats) {
+  const canvas = $('daily-chart');
+  if (!canvas) return;
+
+  const data = [...dailyStats].reverse(); // 从旧到新排序（不改动原数组）
+  const labels = data.map(d => {
+    const date = new Date(d.date);
+    return `${date.getMonth() + 1}/${date.getDate()}`;
+  });
+  const counts = data.map(d => d.count);
+
+  // 先确定画布尺寸（2x 物理分辨率抗锯齿），再计算布局
+  const cssWidth = canvas.parentElement.clientWidth || 600;
+  const cssHeight = 200;
+  canvas.width = cssWidth * 2;
+  canvas.height = cssHeight * 2;
+  canvas.style.width = cssWidth + 'px';
+  canvas.style.height = cssHeight + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(2, 2);
+
+  const padding = 40;
+  const chartWidth = cssWidth - padding * 2;
+  const chartHeight = cssHeight - padding * 2;
+  const maxCount = Math.max(...counts, 1);
+  const slot = chartWidth / counts.length;
+  const barWidth = slot * 0.7;
+
+  // 绘制背景网格
+  ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = padding + (chartHeight / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(padding, y);
+    ctx.lineTo(cssWidth - padding, y);
+    ctx.stroke();
+  }
+
+  // 绘制柱状图
+  counts.forEach((count, i) => {
+    const x = padding + i * slot + (slot - barWidth) / 2;
+    const barHeight = (count / maxCount) * chartHeight;
+    const y = padding + chartHeight - barHeight;
+
+    // 柱子
+    ctx.fillStyle = '#C4612F';
+    ctx.fillRect(x, y, barWidth, barHeight);
+
+    // 标签
+    ctx.fillStyle = '#5C635D';
+    ctx.font = '11px Inter';
+    ctx.textAlign = 'center';
+    ctx.fillText(labels[i], x + barWidth / 2, cssHeight - padding + 20);
+
+    // 数值
+    if (count > 0) {
+      ctx.fillStyle = '#1F2421';
+      ctx.font = 'bold 12px Inter';
+      ctx.fillText(count, x + barWidth / 2, y - 5);
+    }
+  });
+}
 
 // ═══════════════════════════════════════════════════
 // VIEW: Upload
@@ -296,7 +412,7 @@ views.upload = async function () {
         <input type="file" id="file-input" multiple accept="image/*" hidden />
         <div class="drop-icon"><svg width="30" height="30"><use href="#ic-cloud-up"/></svg></div>
         <div class="drop-title">拖拽图片到这里，或点击浏览</div>
-        <div class="drop-hint">支持 JPG / PNG / GIF / WEBP / BMP，单文件最大 ${state.maxSize} MB</div>
+        <div class="drop-hint">支持 ${formatLabels().join(' / ')}，单文件最大 ${state.maxSize} MB</div>
       </div>
       <div class="upload-options">
         <select id="upload-album">
@@ -684,11 +800,7 @@ views.settings = function () {
           <div class="setting-row">
             <div class="setting-label">支持的图片格式</div>
             <div class="setting-value" style="flex-wrap:wrap;justify-content:flex-end;gap:4px">
-              <span class="badge badge-green">JPEG</span>
-              <span class="badge badge-green">PNG</span>
-              <span class="badge badge-green">GIF</span>
-              <span class="badge badge-green">WebP</span>
-              <span class="badge badge-green">BMP</span>
+              ${formatLabels().map(f => `<span class="badge badge-green">${esc(f)}</span>`).join('')}
             </div>
           </div>
           <div class="setting-row">
@@ -702,7 +814,7 @@ views.settings = function () {
         <div class="settings-section-body">
           <div class="setting-row"><div class="setting-label">应用名称</div><div class="setting-value">IMGHOST 图床</div></div>
           <div class="setting-row"><div class="setting-label">技术栈</div><div class="setting-value">Go · Gin · SQLite · Vanilla JS</div></div>
-          <div class="setting-row"><div class="setting-label">存储后端</div><div class="setting-value"><span class="badge badge-blue">本地磁盘</span></div></div>
+          <div class="setting-row"><div class="setting-label">存储后端</div><div class="setting-value"><span class="badge badge-blue">${state.backend === 's3' ? 'S3 兼容存储' : '本地磁盘'}</span></div></div>
         </div>
       </div>
     </div>`;
@@ -815,10 +927,40 @@ $('clear-token').addEventListener('click', () => { localStorage.removeItem('imgb
 
 // ─── Init ───
 async function init() {
+  // 加载主题设置
+  const savedTheme = localStorage.getItem('imgbed_theme') || 'light';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  updateThemeButton(savedTheme);
+
   if (!API.token()) { showTokenModal(); return; }
-  await Promise.all([loadStats(), loadAlbums()]);
+  await Promise.all([loadConfig(), loadStats(), loadAlbums()]);
   const view = location.hash.slice(1) || 'dashboard';
   navigate(view);
 }
+
+// 主题切换
+function updateThemeButton(theme) {
+  const btn = $('theme-toggle');
+  const text = $('theme-text');
+  if (!btn || !text) return;
+  text.textContent = theme === 'light' ? '深色模式' : '浅色模式';
+}
+
+function toggleTheme() {
+  const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+  const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', newTheme);
+  localStorage.setItem('imgbed_theme', newTheme);
+  updateThemeButton(newTheme);
+  toast(`已切换到${newTheme === 'light' ? '浅色' : '深色'}模式`, 'success');
+}
+
+// 绑定主题切换按钮
+document.addEventListener('DOMContentLoaded', () => {
+  const themeBtn = $('theme-toggle');
+  if (themeBtn) {
+    themeBtn.addEventListener('click', toggleTheme);
+  }
+});
 
 init();

@@ -64,15 +64,3 @@ func (s *S3Store) Delete(ctx context.Context, key string) error {
 	}
 	return nil
 }
-
-func (s *S3Store) Exists(ctx context.Context, key string) (bool, error) {
-	_, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
-	if err == nil {
-		return true, nil
-	}
-	resp := minio.ToErrorResponse(err)
-	if resp.Code == "NoSuchKey" {
-		return false, nil
-	}
-	return false, fmt.Errorf("S3 Stat: %w", err)
-}

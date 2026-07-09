@@ -20,3 +20,11 @@ server.err
 .idea
 .DS_Store
 Thumbs.db
+
+.claude
+.codex
+out
+docs
+scripts
+*.tar.gz
+*.md

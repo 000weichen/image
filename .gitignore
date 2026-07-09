@@ -14,11 +14,17 @@ server.err
 *.test
 *.out
 
+# 构建/打包产物
+out/
+*.tar.gz
+
 # 编辑器/系统
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
-# 无关的插件脚手架
+# 无关的插件脚手架 / AI 工具目录
 .mimocode/
+.codex/
+.claude/settings.local.json
